@@ -28,13 +28,10 @@ def read(f, encoding='cp1252', header_only=False, check_version=True):
     :returns: A NanoscopeFile object containing the image data.
     :raises OSError: If a passed file object is not opened in binary mode.
     """
-    try:
-        with io.open(f, 'rb') as file_obj:
-            images = NanoscopeFile(file_obj, encoding, header_only, check_version)
-    except TypeError:
-        if 'b' not in f.mode:
-            raise OSError('File must be opened in binary mode.')
-        images = NanoscopeFile(f, encoding, header_only, check_version)
+    # 2023年2月8日  精简代码
+    with io.open(f, 'rb') as file_obj:
+        assert 'b' in file_obj.mode, 'File must be opened in binary mode.'
+        images = NanoscopeFile(file_obj, encoding, header_only, check_version)
     return images
 
 
@@ -42,7 +39,7 @@ class NanoscopeFile(object):
     """
     Handles reading and parsing Nanoscope files.
     """
-    supported_versions = ['0x05120000', '0x05120130', '0x09300201', ]
+    supported_versions = ['0x05120000', '0x05120130', '0x09300201', '0x09010300', '0x09700105']
 
     def __init__(self, file_object, encoding='utf-8', header_only=False, check_version=True):
         self.images = {}
@@ -52,7 +49,13 @@ class NanoscopeFile(object):
         self._read_header(file_object, check_version)
         if not header_only:
             for image_type in six.iterkeys(self.config['_Images']):
-                self._read_image_data(file_object, image_type)
+                # 2023年2月8日 修改
+                try:
+                    self._read_image_data(file_object, image_type)
+                except:
+                    # print("Failed to read image_type:", image_type)
+                    # 有些 image_type 读取不了
+                    pass
 
     @property
     def height(self):
@@ -131,13 +134,21 @@ class NanoscopeFile(object):
         data_size = config['Bytes/pixel']
         number_lines = config['Number of lines']
         samples_per_line = config['Samps/line']
+        data_length = config['Data length']
 
         file_object.seek(data_offset)
+        # 2023年2月8日 修改，数据长度以config的data length为准，data_size可能不准确
         number_points = number_lines * samples_per_line
-        raw_data = (np.frombuffer(file_object.read(data_size * number_points),
-                                  dtype='<i{}'.format(data_size),
+        data_size_2 = int(data_length/number_points)
+        raw_data = (np.frombuffer(file_object.read(data_length),
+                                  dtype='<i{}'.format(data_size_2),
                                   count=number_points)
                    .reshape((number_lines, samples_per_line)))
+        # number_points = number_lines * samples_per_line
+        # raw_data = (np.frombuffer(file_object.read(data_size * number_points),
+        #                           dtype='<i{}'.format(data_size),
+        #                           count=number_points)
+        #            .reshape((number_lines, samples_per_line)))
 
         scan_size = self._get_config_fuzzy_key(config, ['Scan size', 'Scan Size'])
 
@@ -157,6 +168,9 @@ class NanoscopeFile(object):
         parameter = self.config['_Images'][image_type][key]
         sensitivity = self.config[parameter.soft_scale]
         value = parameter.hard_value
+        # print(type(sensitivity), sensitivity)
+        # print(type(value), value)
+        # 有些解析错误，如 Arb 这个单位
         return sensitivity * value
 
     def _get_config_fuzzy_key(self, config, keys):
